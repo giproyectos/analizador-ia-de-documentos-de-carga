@@ -1,0 +1,6 @@
+{
+  "name": "Analizador IA de Documentos de Carga",
+  "description": "Valida y compara automáticamente documentos de embarque como facturas, B/L y otros, usando IA para detectar inconsistencias.",
+  "requestFramePermissions": [],
+  "prompt": ""
+}

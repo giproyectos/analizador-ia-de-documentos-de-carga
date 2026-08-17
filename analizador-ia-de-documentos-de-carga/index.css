@@ -1,0 +1,324 @@
+
+:root {
+  --font-sans: 'Inter', sans-serif;
+  --background: #f8fafc;
+  --surface: #ffffff;
+  --primary: #15599a;
+  --primary-hover: #1b3462;
+  --primary-text: #ffffff;
+  --secondary: #e8f0f8;
+  --secondary-hover: #dde7f3;
+  --secondary-text: #15599a;
+  --text-primary: #0e2841;
+  --text-secondary: #4b5f78;
+  --border: #e2e8f0;
+  --border-focus: #a8c7e8;
+  --success: #169e49;
+  --danger: #dc2626;
+  --warning: #ef9422;
+  --radius: 0.75rem;
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+}
+
+*, *::before, *::after {
+    box-sizing: border-box;
+}
+
+body {
+    font-family: var(--font-sans);
+    background-color: var(--background);
+    color: var(--text-primary);
+    margin: 0;
+    padding: 2rem 2rem 0; /* Remove bottom padding to let footer handle it */
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+
+main {
+    width: 100%;
+    max-width: 1200px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 2rem;
+    flex-grow: 1; /* Allow main to take up available space */
+}
+
+.main-header {
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.main-header h1 {
+    font-size: 2rem;
+    font-weight: 700;
+    margin: 0;
+}
+
+.main-header p {
+    max-width: 500px;
+    margin: 0;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+/* --- Upload Section --- */
+.upload-section {
+    display: flex;
+    justify-content: center;
+    padding: 0 1rem;
+}
+
+.upload-panel.main-upload {
+    width: 100%;
+    max-width: 600px;
+}
+
+.upload-panel .file-input {
+    width: 0.1px;
+    height: 0.1px;
+    opacity: 0;
+    overflow: hidden;
+    position: absolute;
+    z-index: -1;
+}
+
+.upload-panel .upload-label {
+    display: block;
+    width: 100%;
+    height: 100%;
+    padding: 2rem;
+    border: 2px dashed var(--border);
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: all 0.2s ease-in-out;
+    background-color: var(--surface);
+    font-family: inherit;
+    font-size: inherit;
+}
+
+.upload-panel.main-upload .upload-label {
+    background-color: var(--secondary);
+    border-color: var(--primary);
+}
+
+
+.upload-panel .upload-label:hover:not(:disabled) {
+    border-color: var(--primary);
+    background-color: #f7faff;
+    transform: translateY(-2px);
+    box-shadow: var(--shadow);
+}
+.upload-panel.main-upload .upload-label:hover:not(:disabled) {
+    background-color: var(--secondary-hover);
+}
+
+
+.upload-label .upload-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 0.75rem;
+}
+
+.upload-content .upload-icon {
+    width: 40px;
+    height: 40px;
+    color: var(--primary);
+    background-color: var(--surface);
+    border-radius: 50%;
+    padding: 8px; /* Added padding */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.upload-panel.main-upload .upload-icon {
+    background-color: var(--primary);
+    color: var(--primary-text);
+}
+
+
+.upload-content .upload-icon svg {
+    width: 100%; /* Fill the padded space */
+    height: 100%;
+}
+
+.upload-content .upload-title {
+    font-weight: 600;
+    font-size: 1rem;
+    color: var(--text-primary);
+}
+
+.upload-content .upload-prompt {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    min-height: 20px;
+    transition: color 0.2s;
+}
+
+.upload-prompt.file-selected {
+    color: var(--primary);
+    font-weight: 600;
+}
+
+
+/* --- Action Buttons --- */
+.action-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    justify-content: center;
+    align-items: center;
+}
+
+.button-primary, .button-secondary {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem 1.5rem;
+    border-radius: var(--radius);
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease-in-out;
+    border: none;
+    min-width: 280px;
+    white-space: nowrap;
+}
+
+.button-primary {
+    background-color: var(--primary);
+    color: var(--primary-text);
+}
+.button-primary:hover:not(:disabled) {
+    background-color: var(--primary-hover);
+    box-shadow: var(--shadow);
+}
+
+.button-secondary {
+    background-color: var(--surface);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+}
+
+.button-secondary:hover:not(:disabled) {
+    background-color: var(--background);
+    border-color: var(--border-focus);
+}
+
+#clear-button {
+  color: var(--text-primary);
+}
+#clear-button:hover:not(:disabled) {
+  background-color: #f1f5f9;
+  border-color: #e2e8f0;
+}
+
+.button-primary:disabled, .button-secondary:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+.upload-label:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+
+/* --- Result container & Status States --- */
+.result-container {
+    background-color: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-sm);
+    min-height: 250px;
+    margin-bottom: 2rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background-color 0.3s ease-in-out;
+}
+
+.initial-state, .status-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem;
+    text-align: center;
+    color: var(--text-secondary);
+}
+.initial-state svg, .status-state svg {
+    margin-bottom: 1rem;
+    width: 64px;
+    height: 64px;
+}
+.initial-state h2, .status-state h2 {
+    color: var(--text-primary);
+    font-size: 1.25rem;
+    margin: 0 0 0.5rem 0;
+}
+.initial-state p, .status-state p { 
+    margin: 0; 
+    max-width: 450px; 
+    line-height: 1.6;
+}
+.initial-state svg { 
+    color: var(--border);
+    stroke-width: 1.5;
+}
+
+.status-state .success-icon { 
+    color: var(--success); 
+    stroke-width: 1.5;
+}
+.status-state .error-icon { 
+    color: var(--danger); 
+    stroke-width: 1.5;
+}
+
+.spinner-large {
+    width: 48px;
+    height: 48px;
+    border: 4px solid var(--secondary);
+    border-top-color: var(--primary);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin-bottom: 1.5rem;
+}
+
+@keyframes spin { 
+    to { transform: rotate(360deg); } 
+}
+
+
+/* --- Footer --- */
+footer {
+    text-align: center;
+    padding: 1.5rem;
+    margin-top: auto; /* Push footer to the bottom */
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    border-top: 1px solid var(--border);
+    background-color: var(--surface);
+}
+
+.footer-content {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 0.75rem;
+    font-weight: 500;
+}
+
+.footer-content img {
+    height: 24px;
+    width: auto;
+}

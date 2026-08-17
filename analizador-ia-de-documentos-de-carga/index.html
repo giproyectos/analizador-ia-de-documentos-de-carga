@@ -1,0 +1,67 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analizador IA de Documentos de Carga</title>
+    <link rel="stylesheet" href="index.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/index.css">
+</head>
+<body>
+    <main>
+        <header class="main-header">
+            <h1>Analizador Inteligente de Documentos</h1>
+            <p>Seleccione una carpeta para iniciar el análisis automático y generar el reporte en PDF.</p>
+        </header>
+
+        <div class="upload-section">
+             <div class="upload-panel main-upload">
+                <label for="folder-input" class="upload-label">
+                    <div class="upload-content">
+                        <svg class="upload-icon" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                        <span class="upload-title">Seleccionar Carpeta de Documentos</span>
+                        <span class="upload-prompt" id="folder-selection-prompt">Haga clic para seleccionar una carpeta</span>
+                    </div>
+                </label>
+                <input type="file" id="folder-input" webkitdirectory multiple class="file-input">
+            </div>
+        </div>
+        
+        <div class="action-buttons">
+            <button id="clear-button" class="button-secondary">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                <span class="button-text">Empezar de Nuevo</span>
+            </button>
+        </div>
+
+        <div id="result-container" class="result-container" aria-live="polite">
+            <!-- App status will be injected here. -->
+        </div>
+    </main>
+    <footer>
+        <div class="footer-content">
+            <span>Powered by GI Proyectos SAS</span>
+            <img src="data:image/png;base64,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" alt="G.I. Proyectos Logo Pequeño">
+        </div>
+    </footer>
+    <script type="importmap">
+{
+  "imports": {
+    "@google/genai": "https://esm.sh/@google/genai@^0.14.0",
+    "pdfjs-dist/build/pdf.mjs": "https://esm.sh/pdfjs-dist@4.4.168/build/pdf.mjs",
+    "pdfjs-dist/": "https://esm.sh/pdfjs-dist@4.4.168/",
+    "tesseract.js": "https://esm.sh/tesseract.js@^5.1.0",
+    "xlsx": "https://esm.sh/xlsx@^0.18.5",
+    "jspdf": "https://esm.sh/jspdf@^2.5.1",
+    "jspdf-autotable": "https://esm.sh/jspdf-autotable@^3.8.2"
+  }
+}
+</script>
+    <script type="module" src="index.tsx"></script>
+<script type="module" src="/index.tsx"></script>
+</body>
+</html>
