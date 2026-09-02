@@ -3,17 +3,23 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=18.17.0"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "start": "node server/index.js"
   },
   "dependencies": {
     "@google/genai": "^0.14.0",
     "pdfjs-dist": "4.4.168",
     "tesseract.js": "^5.1.0",
     "jspdf": "^2.5.1",
-    "jspdf-autotable": "^3.8.2"
+    "jspdf-autotable": "^3.8.2",
+    "express": "^4.19.2",
+    "dotenv": "^16.4.5"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
