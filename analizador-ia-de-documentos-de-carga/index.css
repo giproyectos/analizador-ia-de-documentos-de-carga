@@ -174,28 +174,41 @@ main {
     font-weight: 600;
 }
 
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
 /* --- FMM Search Panel --- */
 .fmm-search-panel {
     padding: 2rem;
-    border: 2px dashed var(--border);
+    border: 2px solid var(--primary);
     border-radius: var(--radius);
-    background-color: var(--surface);
+    background-color: var(--secondary);
 }
 
 .fmm-search-controls {
     display: flex;
+    flex-wrap: wrap;
     width: 100%;
     gap: 0.75rem;
 }
 
 .fmm-number-input {
-    flex: 1 1 auto;
+    flex: 2 1 140px;
     min-width: 0;
     padding: 0.75rem 1rem;
     font-size: 1rem;
     font-family: inherit;
     color: var(--text-primary);
-    background-color: var(--background);
+    background-color: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--radius);
 }
@@ -212,8 +225,75 @@ main {
 }
 
 .fmm-search-button {
+    flex: 1 1 100px;
     min-width: unset;
     padding: 0.75rem 1.25rem;
+}
+
+.btn-spinner {
+    display: none;
+    width: 16px;
+    height: 16px;
+    border: 2px solid rgba(255, 255, 255, 0.4);
+    border-top-color: var(--primary-text);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+}
+
+.fmm-search-button.is-loading .btn-spinner {
+    display: inline-block;
+}
+
+/* --- FMM Status (inline search feedback) --- */
+.fmm-status {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.4rem;
+    min-height: 20px;
+}
+
+.fmm-status .upload-prompt {
+    text-align: left;
+}
+
+.fmm-status-icon {
+    display: none;
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    margin-top: 0.1rem;
+}
+
+.fmm-status-icon svg {
+    width: 100%;
+    height: 100%;
+}
+
+.fmm-status[data-state="success"] .fmm-status-icon,
+.fmm-status[data-state="error"] .fmm-status-icon {
+    display: inline-block;
+}
+
+.fmm-status[data-state="success"] .upload-prompt {
+    color: var(--success);
+    font-weight: 600;
+}
+.fmm-status[data-state="success"] .fmm-status-icon {
+    color: var(--success);
+}
+
+.fmm-status[data-state="error"] .upload-prompt {
+    color: var(--danger);
+    font-weight: 600;
+}
+.fmm-status[data-state="error"] .fmm-status-icon {
+    color: var(--danger);
+}
+
+.fmm-status-detail {
+    display: block;
+    font-weight: 400;
+    color: var(--text-secondary);
 }
 
 

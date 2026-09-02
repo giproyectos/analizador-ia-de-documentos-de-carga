@@ -19,15 +19,22 @@
         </header>
 
         <div class="upload-section">
-            <div class="upload-panel fmm-search-panel">
+            <div class="upload-panel main-upload fmm-search-panel">
                 <div class="upload-content">
                     <svg class="upload-icon" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 17.25a6.25 6.25 0 1 0 0-12.5 6.25 6.25 0 0 0 0 12.5Z"></path><path d="m21 21-4.35-4.35"></path></svg>
                     <span class="upload-title">Buscar FMM por Número de Formulario</span>
                     <div class="fmm-search-controls">
-                        <input type="text" id="fmm-number-input" class="fmm-number-input" placeholder="Número de formulario" inputmode="numeric" autocomplete="off">
-                        <button id="fmm-search-button" class="button-primary fmm-search-button">Buscar</button>
+                        <label for="fmm-number-input" class="sr-only">Número de formulario</label>
+                        <input type="text" id="fmm-number-input" class="fmm-number-input" placeholder="Ej: 916145897" inputmode="numeric" autocomplete="off" autofocus>
+                        <button id="fmm-search-button" class="button-primary fmm-search-button" disabled>
+                            <span class="btn-spinner" aria-hidden="true"></span>
+                            <span id="fmm-search-button-label">Buscar</span>
+                        </button>
                     </div>
-                    <span class="upload-prompt" id="fmm-selection-prompt">Escriba el número de formulario y presione Buscar</span>
+                    <div class="fmm-status" id="fmm-status" data-state="idle" aria-live="polite">
+                        <span class="fmm-status-icon" id="fmm-status-icon" aria-hidden="true"></span>
+                        <span class="upload-prompt" id="fmm-selection-prompt">Escriba el número de formulario y presione Buscar</span>
+                    </div>
                 </div>
             </div>
 

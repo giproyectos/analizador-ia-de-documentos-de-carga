@@ -24,7 +24,10 @@ const FMM_API_PROXY_PATH = '/api/fmm';
 // DOM Elements
 const fmmNumberInput = document.getElementById('fmm-number-input') as HTMLInputElement;
 const fmmSearchButton = document.getElementById('fmm-search-button') as HTMLButtonElement;
+const fmmSearchButtonLabel = document.getElementById('fmm-search-button-label') as HTMLSpanElement;
 const fmmSelectionPrompt = document.getElementById('fmm-selection-prompt') as HTMLSpanElement;
+const fmmStatus = document.getElementById('fmm-status') as HTMLDivElement;
+const fmmStatusIcon = document.getElementById('fmm-status-icon') as HTMLSpanElement;
 const folderInput = document.getElementById('folder-input') as HTMLInputElement;
 const folderSelectionPrompt = document.getElementById('folder-selection-prompt') as HTMLSpanElement;
 const clearButton = document.getElementById('clear-button') as HTMLButtonElement;
@@ -777,7 +780,7 @@ function updateUIState(state: 'initial' | 'loading' | 'success' | 'error', messa
                 <div class="initial-state">
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="feather feather-file-text"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
                     <h2>Listo para el Análisis</h2>
-                    <p>Cargue el FMM (JSON) y la carpeta de documentos de soporte para comenzar.</p>
+                    <p>Busque el FMM por número de formulario y seleccione la carpeta de documentos de soporte para comenzar.</p>
                 </div>`;
             break;
     }
@@ -1472,15 +1475,36 @@ async function downloadFullReportAsPDF(analysisResult: any, baseDoc: File, suppo
 }
 
 
+const FMM_STATUS_ICONS = {
+    success: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>',
+    error: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>',
+};
+
+function setFmmStatus(state: 'idle' | 'success' | 'error', message: string, detail?: string) {
+    fmmStatus.dataset.state = state;
+    fmmStatusIcon.innerHTML = state === 'idle' ? '' : FMM_STATUS_ICONS[state];
+    fmmSelectionPrompt.textContent = message;
+    if (detail) {
+        const detailEl = document.createElement('span');
+        detailEl.className = 'fmm-status-detail';
+        detailEl.textContent = detail;
+        fmmSelectionPrompt.appendChild(detailEl);
+    }
+}
+
 function setFmmControlsDisabled(disabled: boolean) {
     fmmNumberInput.disabled = disabled;
-    fmmSearchButton.disabled = disabled;
+    fmmSearchButton.disabled = disabled || !fmmNumberInput.value.trim();
+}
+
+function setFmmSearchLoading(loading: boolean) {
+    fmmSearchButton.classList.toggle('is-loading', loading);
+    fmmSearchButtonLabel.textContent = loading ? 'Buscando…' : 'Buscar';
 }
 
 function resetApp() {
     fmmNumberInput.value = '';
-    fmmSelectionPrompt.textContent = 'Escriba el número de formulario y presione Buscar';
-    fmmSelectionPrompt.classList.remove('file-selected');
+    setFmmStatus('idle', 'Escriba el número de formulario y presione Buscar');
 
     folderInput.value = '';
     folderSelectionPrompt.textContent = 'Haga clic para seleccionar una carpeta';
@@ -1496,18 +1520,21 @@ function resetApp() {
     setFmmControlsDisabled(false);
     folderInput.disabled = false;
     clearButton.disabled = false;
+    fmmNumberInput.focus();
 }
 
 async function searchFmm() {
     const formNumber = fmmNumberInput.value.trim();
     if (!formNumber) {
-        updateUIState('error', 'Ingrese un número de formulario antes de buscar.');
+        setFmmStatus('error', 'Ingrese un número de formulario antes de buscar.');
+        fmmNumberInput.focus();
         return;
     }
 
     setFmmControlsDisabled(true);
+    setFmmSearchLoading(true);
     clearButton.disabled = true;
-    updateUIState('loading', `Buscando el formulario ${formNumber}...`);
+    setFmmStatus('idle', `Buscando el formulario ${formNumber}…`);
 
     try {
         baseDocumentJson = await fetchFmmByNumber(formNumber);
@@ -1517,9 +1544,7 @@ async function searchFmm() {
             { type: 'application/json' }
         );
 
-        fmmSelectionPrompt.textContent = `Formulario ${formNumber} encontrado.`;
-        fmmSelectionPrompt.classList.add('file-selected');
-        updateUIState('initial');
+        setFmmStatus('success', `Formulario ${formNumber} encontrado.`, baseDocumentJson.nombreTercero || undefined);
 
         await maybeStartAnalysis();
     } catch (error) {
@@ -1527,8 +1552,9 @@ async function searchFmm() {
         baseDocumentJson = null;
         baseDocumentFile = null;
         const errorMessage = error instanceof Error ? error.message : 'Ocurrió un error inesperado al buscar el formulario.';
-        updateUIState('error', errorMessage);
+        setFmmStatus('error', errorMessage);
     } finally {
+        setFmmSearchLoading(false);
         setFmmControlsDisabled(false);
         clearButton.disabled = false;
     }
@@ -1573,8 +1599,12 @@ fmmSearchButton.addEventListener('click', () => {
     void searchFmm();
 });
 
+fmmNumberInput.addEventListener('input', () => {
+    fmmSearchButton.disabled = !fmmNumberInput.value.trim();
+});
+
 fmmNumberInput.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') {
+    if (event.key === 'Enter' && !fmmSearchButton.disabled) {
         event.preventDefault();
         void searchFmm();
     }
