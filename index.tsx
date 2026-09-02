@@ -1466,8 +1466,13 @@ async function downloadFullReportAsPDF(analysisResult: any, baseDoc: File, suppo
     
     const now = new Date();
     const timestamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
-    const fileName = `resultado_validacion_${timestamp}.pdf`;
-    
+    const fmmNumberForFileName = (fmmNumber && fmmNumber !== 'N/A' && fmmNumber.toLowerCase() !== 'no encontrado')
+        ? fmmNumber.replace(/[^a-zA-Z0-9-_]/g, '_')
+        : null;
+    const fileName = fmmNumberForFileName
+        ? `resultado_validacion_FMM_${fmmNumberForFileName}_${timestamp}.pdf`
+        : `resultado_validacion_${timestamp}.pdf`;
+
     doc.save(fileName);
 }
 
