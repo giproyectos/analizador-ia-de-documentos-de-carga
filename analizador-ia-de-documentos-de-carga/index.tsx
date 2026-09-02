@@ -15,8 +15,11 @@ const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 // Web service del FMM (ver Boris Beltrán, reunión 2026-09-01): se busca el FMM
 // por número de formulario en vez de cargar el JSON manualmente.
-const FMM_API_URL = process.env.FMM_API_URL || 'http://www.siza.com.co/spdcitas-1.0/api/formulario';
-const FMM_API_TOKEN = process.env.FMM_API_TOKEN;
+// Se llama a través del proxy same-origin definido en vite.config.ts (no
+// directo a siza.com.co) porque ese servicio no responde con headers CORS;
+// el proxy también agrega el header 'Token' del lado del servidor, así que
+// aquí en el cliente no se maneja ningún secreto.
+const FMM_API_PROXY_PATH = '/api/fmm';
 
 // DOM Elements
 const fmmNumberInput = document.getElementById('fmm-number-input') as HTMLInputElement;
@@ -481,17 +484,10 @@ function validateFmmDocument(data: any, sourceLabel: string): FmmDocument {
 }
 
 async function fetchFmmByNumber(formNumber: string): Promise<FmmDocument> {
-    if (!FMM_API_TOKEN) {
-        throw new Error('Falta configurar FMM_API_TOKEN. Defínalo en .env.local antes de compilar.');
-    }
-
-    const url = `${FMM_API_URL}?nmform_zf=${encodeURIComponent(formNumber)}`;
+    const url = `${FMM_API_PROXY_PATH}?nmform_zf=${encodeURIComponent(formNumber)}`;
     let response: Response;
     try {
-        response = await fetch(url, {
-            method: 'GET',
-            headers: { 'Token': FMM_API_TOKEN },
-        });
+        response = await fetch(url, { method: 'GET' });
     } catch (error) {
         console.error('Error de red al consultar el FMM:', error);
         throw new Error('No se pudo conectar con el servicio de búsqueda de FMM. Verifique su conexión e inténtelo de nuevo.');
