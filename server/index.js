@@ -44,7 +44,8 @@ app.get('/api/fmm', async (req, res) => {
     // El dominio del servicio de FMM esta detras de un WAF/CDN cuya resolucion
     // DNS falla de forma intermitente (ENOTFOUND esporadico). Se reintenta un
     // par de veces antes de reportar error al navegador.
-    const MAX_INTENTOS = 3;
+    const MAX_INTENTOS = 4;
+    const ESPERAS_MS = [500, 1000, 1500];
     let ultimoError;
     for (let intento = 1; intento <= MAX_INTENTOS; intento++) {
         try {
@@ -60,7 +61,7 @@ app.get('/api/fmm', async (req, res) => {
             ultimoError = error;
             console.error(`Error al consultar el servicio de FMM (intento ${intento}/${MAX_INTENTOS}):`, error);
             if (intento < MAX_INTENTOS) {
-                await new Promise((resolve) => setTimeout(resolve, 500));
+                await new Promise((resolve) => setTimeout(resolve, ESPERAS_MS[intento - 1]));
             }
         }
     }
