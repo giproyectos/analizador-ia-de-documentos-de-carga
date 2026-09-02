@@ -41,18 +41,32 @@ app.get('/api/fmm', async (req, res) => {
     const targetUrl = new URL(fmmApiUrl.toString());
     targetUrl.searchParams.set('nmform_zf', String(nmformZf));
 
-    try {
-        const upstreamResponse = await fetch(targetUrl, {
-            method: 'GET',
-            headers: { Token: FMM_API_TOKEN },
-        });
-        const contentType = upstreamResponse.headers.get('content-type') || 'application/json';
-        const body = await upstreamResponse.text();
-        res.status(upstreamResponse.status).set('Content-Type', contentType).send(body);
-    } catch (error) {
-        console.error('Error al consultar el servicio de FMM:', error);
-        res.status(502).json({ error: 'No se pudo conectar con el servicio de búsqueda de FMM.' });
+    // El dominio del servicio de FMM esta detras de un WAF/CDN cuya resolucion
+    // DNS falla de forma intermitente (ENOTFOUND esporadico). Se reintenta un
+    // par de veces antes de reportar error al navegador.
+    const MAX_INTENTOS = 3;
+    let ultimoError;
+    for (let intento = 1; intento <= MAX_INTENTOS; intento++) {
+        try {
+            const upstreamResponse = await fetch(targetUrl, {
+                method: 'GET',
+                headers: { Token: FMM_API_TOKEN },
+            });
+            const contentType = upstreamResponse.headers.get('content-type') || 'application/json';
+            const body = await upstreamResponse.text();
+            res.status(upstreamResponse.status).set('Content-Type', contentType).send(body);
+            return;
+        } catch (error) {
+            ultimoError = error;
+            console.error(`Error al consultar el servicio de FMM (intento ${intento}/${MAX_INTENTOS}):`, error);
+            if (intento < MAX_INTENTOS) {
+                await new Promise((resolve) => setTimeout(resolve, 500));
+            }
+        }
     }
+
+    console.error('Se agotaron los reintentos contra el servicio de FMM:', ultimoError);
+    res.status(502).json({ error: 'No se pudo conectar con el servicio de búsqueda de FMM.' });
 });
 
 app.use(express.static(distDir));
