@@ -72,11 +72,17 @@ main {
 .upload-section {
     display: flex;
     justify-content: center;
+    flex-wrap: wrap;
+    gap: 1.5rem;
     padding: 0 1rem;
 }
 
+.upload-panel {
+    flex: 1 1 300px;
+    max-width: 480px;
+}
+
 .upload-panel.main-upload {
-    width: 100%;
     max-width: 600px;
 }
 

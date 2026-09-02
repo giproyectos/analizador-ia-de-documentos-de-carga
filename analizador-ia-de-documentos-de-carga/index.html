@@ -15,15 +15,26 @@
     <main>
         <header class="main-header">
             <h1>Analizador Inteligente de Documentos</h1>
-            <p>Seleccione una carpeta para iniciar el análisis automático y generar el reporte en PDF.</p>
+            <p>Cargue el FMM (JSON) y la carpeta de documentos de soporte para iniciar el análisis automático y generar el reporte en PDF.</p>
         </header>
 
         <div class="upload-section">
-             <div class="upload-panel main-upload">
+            <div class="upload-panel">
+                <label for="fmm-json-input" class="upload-label">
+                    <div class="upload-content">
+                        <svg class="upload-icon" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                        <span class="upload-title">Cargar FMM (JSON)</span>
+                        <span class="upload-prompt" id="fmm-selection-prompt">Haga clic para seleccionar el archivo del FMM</span>
+                    </div>
+                </label>
+                <input type="file" id="fmm-json-input" accept=".json,.txt,application/json,text/plain" class="file-input">
+            </div>
+
+            <div class="upload-panel main-upload">
                 <label for="folder-input" class="upload-label">
                     <div class="upload-content">
                         <svg class="upload-icon" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
-                        <span class="upload-title">Seleccionar Carpeta de Documentos</span>
+                        <span class="upload-title">Seleccionar Carpeta de Documentos de Soporte</span>
                         <span class="upload-prompt" id="folder-selection-prompt">Haga clic para seleccionar una carpeta</span>
                     </div>
                 </label>
@@ -55,7 +66,6 @@
     "pdfjs-dist/build/pdf.mjs": "https://esm.sh/pdfjs-dist@4.4.168/build/pdf.mjs",
     "pdfjs-dist/": "https://esm.sh/pdfjs-dist@4.4.168/",
     "tesseract.js": "https://esm.sh/tesseract.js@^5.1.0",
-    "xlsx": "https://esm.sh/xlsx@^0.18.5",
     "jspdf": "https://esm.sh/jspdf@^2.5.1",
     "jspdf-autotable": "https://esm.sh/jspdf-autotable@^3.8.2"
   }

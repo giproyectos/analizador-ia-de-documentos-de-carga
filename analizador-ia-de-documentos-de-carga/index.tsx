@@ -5,7 +5,6 @@
 import { GoogleGenAI, Type } from '@google/genai';
 import * as pdfjsLib from 'pdfjs-dist';
 import * as Tesseract from 'tesseract.js';
-import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
@@ -15,19 +14,75 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = `https://esm.sh/pdfjs-dist@4.4.168/buil
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 // DOM Elements
+const fmmJsonInput = document.getElementById('fmm-json-input') as HTMLInputElement;
+const fmmSelectionPrompt = document.getElementById('fmm-selection-prompt') as HTMLSpanElement;
 const folderInput = document.getElementById('folder-input') as HTMLInputElement;
 const folderSelectionPrompt = document.getElementById('folder-selection-prompt') as HTMLSpanElement;
 const clearButton = document.getElementById('clear-button') as HTMLButtonElement;
 const resultContainer = document.getElementById('result-container') as HTMLDivElement;
 
+// FMM (Documento Base) types - reflejan el JSON exportado por el sistema de origen
+interface FmmArticulo {
+    coditem: string;
+    descripcion_item: string;
+    cantidad: number;
+    ptprecio: number;
+    nmconversion: number;
+    unidad_medida: string;
+}
+
+interface FmmSubpartida {
+    codsp: string;
+    codempaque: string;
+    pesobruto: number;
+    pesoneto: number;
+    nro_bultos: number;
+    codbandera: string | null;
+    codorigen: string | null;
+    tasacambio: number;
+    codcompra: string | null;
+    coddestino: string | null;
+    codprocedencia: string | null;
+    transporte: string | null;
+    fletes: number;
+    seguro: number;
+    otrosgastos: number;
+    fob: number;
+    umedida_sp: string;
+    cantidad_art: number;
+    tran_articulos: FmmArticulo[];
+}
+
+interface FmmComplemento {
+    dsanexo: string;
+    nmdoc: string | null;
+    dscomentario: string | null;
+    fecomple: string | null;
+}
+
+interface FmmDocument {
+    nro_form: number;
+    codtransac: string;
+    coddoc_transp: string | null;
+    coddoc_expor: string | null;
+    codfactura: string;
+    dscomentario: string | null;
+    nitTercero: string;
+    nombreTercero: string;
+    dias: number;
+    tran_subpartidas: FmmSubpartida[];
+    complementos: FmmComplemento[];
+}
 
 // State
 let tesseractWorker: Tesseract.Worker | null = null;
-let conversionData: any[] | null = null;
 
-let baseDocument: File | null = null;
+let baseDocumentJson: FmmDocument | null = null;
+let baseDocumentFile: File | null = null;
 let supportDocuments: File[] = [];
-let conversionFile: File | null = null;
+
+let selectedFmmFile: File | null = null;
+let selectedSupportFiles: File[] = [];
 
 
 async function getTesseractWorker() {
@@ -230,11 +285,11 @@ const responseSchema = {
     required: ["fmm_number", "general_reasoning", "overall_match", "comparison_results", "articles_comparison", "cost_comparison"]
 };
 
-async function extractTextFromPdf(file: File, forClassification = false): Promise<string> {
+async function extractTextFromPdf(file: File): Promise<string> {
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument(arrayBuffer).promise;
     let fullText = '';
-    const numPages = forClassification ? Math.min(1, pdf.numPages) : pdf.numPages;
+    const numPages = pdf.numPages;
 
     for (let i = 1; i <= numPages; i++) {
         updateUIState('loading', `Extrayendo texto de ${file.name} (página ${i}/${numPages})...`);
@@ -269,41 +324,187 @@ async function extractTextFromPdf(file: File, forClassification = false): Promis
     return fullText;
 }
 
+function normalizeFmmValue(v: string | number | null | undefined): string {
+    if (v === null || v === undefined) return 'No encontrado';
+    const s = String(v).trim();
+    if (s === '' || s === '.') return 'No encontrado';
+    return s;
+}
 
-async function parseExcelFile(file: File) {
+// Si varias subpartidas coinciden en un campo, se reporta un único valor.
+// Si difieren, se reporta una fila por subpartida para no perder información.
+// Nota: los 4 ejemplos reales tienen una sola subpartida cada uno; el caso N>1
+// con valores distintos no está probado con datos reales.
+function summarizeSubpartidaField(
+    fmm: FmmDocument,
+    getValue: (sp: FmmSubpartida) => string | number | null | undefined
+): string {
+    const values = fmm.tran_subpartidas.map(sp => normalizeFmmValue(getValue(sp)));
+    const distinct = Array.from(new Set(values));
+    if (distinct.length <= 1) return distinct[0] ?? 'No encontrado';
+    return fmm.tran_subpartidas.map((sp, i) => `${sp.codsp}: ${values[i]}`).join(' | ');
+}
+
+/**
+ * ASUNCIÓN DE MONEDA/CIF — PENDIENTE DE CONFIRMAR CON EL EQUIPO DE NEGOCIO.
+ * Se asume que fob/fletes/seguro/otrosgastos de cada subpartida están en USD, y
+ * que 'tasacambio' es la tasa USD->COP de esa subpartida:
+ *   CIF_USD = fob + fletes + seguro + otrosgastos
+ *   CIF_COP = CIF_USD * tasacambio
+ * Si el equipo confirma una convención distinta, ajustar SOLO esta función (y
+ * computeBaseCifValues, que la consume).
+ */
+function computeSubpartidaCifUsd(sp: FmmSubpartida): number {
+    return (sp.fob ?? 0) + (sp.fletes ?? 0) + (sp.seguro ?? 0) + (sp.otrosgastos ?? 0);
+}
+
+function computeBaseCifValues(fmm: FmmDocument): { subpartida: string; value_str: string; value_num: number; currency: string }[] {
+    const values: { subpartida: string; value_str: string; value_num: number; currency: string }[] = [];
+    fmm.tran_subpartidas.forEach(sp => {
+        const cifUsd = computeSubpartidaCifUsd(sp);
+        values.push({ subpartida: sp.codsp, value_str: cifUsd.toFixed(4), value_num: cifUsd, currency: 'USD' });
+        if (sp.tasacambio) {
+            const cifCop = cifUsd * sp.tasacambio;
+            values.push({ subpartida: sp.codsp, value_str: cifCop.toFixed(4), value_num: cifCop, currency: 'COP' });
+        }
+    });
+    return values;
+}
+
+function computeBaseCifTotals(cifValues: { value_num: number; currency: string }[]): { currency: string; total: number }[] {
+    const totals: Record<string, number> = {};
+    cifValues.forEach(v => { totals[v.currency] = (totals[v.currency] ?? 0) + v.value_num; });
+    return Object.entries(totals).map(([currency, total]) => ({ currency, total }));
+}
+
+interface BaseDocPromptData {
+    fmm_number: string;
+    codigo_factura: string;
+    documento_transporte: string;
+    nit_tercero: string;
+    nombre_tercero: string;
+    dias_permanencia: number;
+    comentario_general: string;
+    origen: string;
+    compra: string;
+    destino: string;
+    procedencia: string;
+    bandera: string;
+    tipo_transporte: string;
+    tasa_cambio: string;
+    subpartidas: {
+        codigo_subpartida: string;
+        peso_bruto: number;
+        peso_neto: number;
+        numero_bultos: number;
+        unidad_medida_subpartida: string;
+        cantidad_subpartida: number;
+        fob: number;
+        fletes: number;
+        seguro: number;
+        otros_gastos: number;
+        tasa_cambio: number;
+        articulos: {
+            codigo_item: string;
+            descripcion: string;
+            cantidad: number;
+            precio_unitario_usd: number;
+            factor_conversion_nmconversion: number;
+            unidad_medida: string;
+        }[];
+    }[];
+    complementos_anexos: { anexo: string; documento: string; comentario: string; fecha: string }[];
+}
+
+function buildBaseDocPromptData(fmm: FmmDocument): BaseDocPromptData {
+    return {
+        fmm_number: String(fmm.nro_form),
+        codigo_factura: normalizeFmmValue(fmm.codfactura),
+        documento_transporte: normalizeFmmValue(fmm.coddoc_transp),
+        nit_tercero: normalizeFmmValue(fmm.nitTercero),
+        nombre_tercero: normalizeFmmValue(fmm.nombreTercero),
+        dias_permanencia: fmm.dias ?? 0,
+        comentario_general: normalizeFmmValue(fmm.dscomentario),
+        origen: summarizeSubpartidaField(fmm, sp => sp.codorigen),
+        compra: summarizeSubpartidaField(fmm, sp => sp.codcompra),
+        destino: summarizeSubpartidaField(fmm, sp => sp.coddestino),
+        procedencia: summarizeSubpartidaField(fmm, sp => sp.codprocedencia),
+        bandera: summarizeSubpartidaField(fmm, sp => sp.codbandera),
+        tipo_transporte: summarizeSubpartidaField(fmm, sp => sp.transporte),
+        tasa_cambio: summarizeSubpartidaField(fmm, sp => sp.tasacambio),
+        subpartidas: fmm.tran_subpartidas.map(sp => ({
+            codigo_subpartida: sp.codsp,
+            peso_bruto: sp.pesobruto,
+            peso_neto: sp.pesoneto,
+            numero_bultos: sp.nro_bultos,
+            unidad_medida_subpartida: sp.umedida_sp,
+            cantidad_subpartida: sp.cantidad_art,
+            fob: sp.fob,
+            fletes: sp.fletes,
+            seguro: sp.seguro,
+            otros_gastos: sp.otrosgastos,
+            tasa_cambio: sp.tasacambio,
+            articulos: sp.tran_articulos.map(a => ({
+                codigo_item: a.coditem,
+                descripcion: a.descripcion_item,
+                cantidad: a.cantidad,
+                precio_unitario_usd: a.ptprecio,
+                factor_conversion_nmconversion: a.nmconversion,
+                unidad_medida: a.unidad_medida,
+            })),
+        })),
+        complementos_anexos: (fmm.complementos ?? []).map(c => ({
+            anexo: normalizeFmmValue(c.dsanexo),
+            documento: normalizeFmmValue(c.nmdoc),
+            comentario: normalizeFmmValue(c.dscomentario),
+            fecha: normalizeFmmValue(c.fecomple),
+        })),
+    };
+}
+
+async function parseFmmJsonFile(file: File): Promise<FmmDocument> {
+    let raw: string;
     try {
-        conversionFile = file;
-        const arrayBuffer = await file.arrayBuffer();
-        const workbook = XLSX.read(arrayBuffer, { type: 'array' });
-        const sheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[sheetName];
-        const json = XLSX.utils.sheet_to_json(worksheet);
-        conversionData = json as any[];
-    } catch (error) {
-        console.error("Error parsing Excel file:", error);
-        conversionData = null;
-        conversionFile = null;
-        throw new Error("Hubo un error al leer el archivo de Excel. Asegúrese de que no esté corrupto.");
+        raw = await file.text();
+    } catch {
+        throw new Error(`No se pudo leer el archivo '${file.name}'.`);
     }
+    let data: any;
+    try {
+        data = JSON.parse(raw);
+    } catch {
+        throw new Error(`El archivo '${file.name}' no contiene un JSON válido.`);
+    }
+    if (!data || typeof data !== 'object') {
+        throw new Error(`El archivo '${file.name}' no tiene la estructura esperada de un FMM.`);
+    }
+    if (!Array.isArray(data.tran_subpartidas) || data.tran_subpartidas.length === 0) {
+        throw new Error(`El archivo '${file.name}' no contiene subpartidas ('tran_subpartidas'). Verifique que sea el JSON correcto del FMM.`);
+    }
+    if (data.nro_form === undefined || data.nro_form === null) {
+        throw new Error(`El archivo '${file.name}' no contiene un número de formulario ('nro_form').`);
+    }
+    return data as FmmDocument;
 }
 
 async function runVerification(): Promise<any> {
-    if (!baseDocument) {
-        throw new Error("Error interno: El documento base no fue establecido antes de la verificación.");
+    if (!baseDocumentJson || !baseDocumentFile) {
+        throw new Error("Error interno: El documento base (JSON del FMM) no fue establecido antes de la verificación.");
     }
     if (supportDocuments.length === 0) {
         throw new Error("No se encontraron documentos de soporte en la carpeta cargada.");
     }
 
     try {
-        updateUIState('loading', 'Extrayendo texto de los documentos...');
-        const baseFileName = baseDocument.name;
+        updateUIState('loading', 'Extrayendo texto de los documentos de soporte...');
+        const baseFileName = baseDocumentFile.name;
         const supportFileNames = supportDocuments.map(f => f.name).join(', ');
 
-        const baseDocTextPromise = extractTextFromPdf(baseDocument);
+        const baseDocPromptData = buildBaseDocPromptData(baseDocumentJson);
+        const baseCifValues = computeBaseCifValues(baseDocumentJson);
+        const baseCifTotals = computeBaseCifTotals(baseCifValues);
+
         const supportDocTextPromises = supportDocuments.map(file => extractTextFromPdf(file));
-        
-        const baseDocText = await baseDocTextPromise;
         const supportDocsTexts = await Promise.all(supportDocTextPromises);
         const supportDocText = supportDocsTexts.join('\n\n--- Siguiente Documento de Soporte ---\n\n');
 
@@ -314,44 +515,63 @@ async function runVerification(): Promise<any> {
             Analiza exhaustivamente los siguientes documentos. Los nombres de los archivos se proporcionan para tu referencia.
 
             **Documentos Proporcionados:**
-            - Documento Base: ${baseFileName}
-            - Documentos de Soporte: ${supportFileNames}
+            - Documento Base (FMM, JSON estructurado): ${baseFileName}
+            - Documentos de Soporte (PDF): ${supportFileNames}
+
+            **Datos EXACTOS del Documento Base (FMM) — YA ESTRUCTURADOS:**
+            Estos datos provienen de un JSON exportado directamente del sistema de origen. Son EXACTOS y
+            NO requieren "reconstrucción" desde texto plano. Tu única tarea con ellos es COPIARLOS TAL CUAL
+            como el lado "base" de cada comparación (\`fmm_number\`, \`base_value\` en \`comparison_results\`,
+            el lado base de \`articles_comparison\`, \`base_doc_cif_values\` y \`base_doc_totals\`). NO los
+            reinterpretes, NO los recalcules ni los busques en ningún texto: ya vienen calculados donde
+            correspondía.
+
+            \`\`\`json
+            ${JSON.stringify(baseDocPromptData, null, 2)}
+            \`\`\`
+
+            **Valores CIF ya calculados por subpartida (COPIAR VERBATIM en 'base_doc_cif_values'):**
+            \`\`\`json
+            ${JSON.stringify(baseCifValues, null, 2)}
+            \`\`\`
+
+            **Grandes totales del documento base ya calculados (COPIAR VERBATIM en 'base_doc_totals'):**
+            \`\`\`json
+            ${JSON.stringify(baseCifTotals, null, 2)}
+            \`\`\`
+
+            **Complementos/Anexos del FMM (contexto libre):** NO se comparan campo a campo, pero pueden
+            contener versiones alternativas o más limpias de números de factura, documento de transporte,
+            contenedor, etc. Úsalos SOLO para desambiguar tu búsqueda en los documentos de soporte,
+            mencionando en \`reasoning\` si encontraste ahí una referencia relacionada que no coincide
+            textualmente con \`codigo_factura\`/\`documento_transporte\`.
+            \`\`\`json
+            ${JSON.stringify(baseDocPromptData.complementos_anexos, null, 2)}
+            \`\`\`
 
             **Tarea:**
-            Extrae y compara la consistencia de los siguientes campos y elementos entre el documento base y los de soporte:
-            1.  **Número de Formulario de Movimiento de Mercancías (FMM) - ¡PRIORIDAD MÁXIMA!** Extrae el número del documento base, a menudo etiquetado como 'Formulario No.'.
-            2.  Número de Documento de Transporte (B/L, AWB, CMR, etc.)
-            3.  Número de Factura Comercial
-            4.  Origen (País/ciudad donde se fabricó la mercancía)
-            5.  Lugar de Compra (País/ciudad de la transacción comercial)
-            6.  Destino (País/ciudad de entrega)
-            7.  Procedencia (País/ciudad desde donde se despachó la mercancía)
-            8.  Bandera (del medio de transporte, si aplica)
-            9.  Tipo de Transporte (Marítimo, Aéreo, Terrestre)
-            10. Tasa de Cambio
-            11. Lista de Artículos/Productos
-            12. Comparación de Costos (CIF vs. Totales de Factura)
+            Extrae de los documentos de soporte y compara contra los datos exactos del documento base:
+            1.  **Número de Formulario de Movimiento de Mercancías (FMM) - ¡PRIORIDAD MÁXIMA!** Usa \`fmm_number\` tal cual.
+            2.  Número de Documento de Transporte (B/L, AWB, CMR, etc.) — base: \`documento_transporte\`.
+            3.  Número de Factura Comercial — base: \`codigo_factura\`.
+            4.  Origen (País/ciudad donde se fabricó la mercancía) — base: \`origen\`.
+            5.  Lugar de Compra (País/ciudad de la transacción comercial) — base: \`compra\`.
+            6.  Destino (País/ciudad de entrega) — base: \`destino\`.
+            7.  Procedencia (País/ciudad desde donde se despachó la mercancía) — base: \`procedencia\`.
+            8.  Bandera (del medio de transporte, si aplica) — base: \`bandera\`.
+            9.  Tipo de Transporte (Marítimo, Aéreo, Terrestre) — base: \`tipo_transporte\`.
+            10. Tasa de Cambio — base: \`tasa_cambio\`.
+            11. Lista de Artículos/Productos — base: \`subpartidas[].articulos[]\`.
+            12. Comparación de Costos (CIF vs. Totales de Factura) — base: \`base_doc_cif_values\`/\`base_doc_totals\`.
 
             **Reglas de Análisis y Razonamiento (¡LEER CON ATENCIÓN! El orden indica la prioridad):**
 
-            1.  **Aviso Importante sobre la Extracción de Texto (¡Regla Fundamental!):** El texto que recibes del PDF es una versión "aplanada". Las columnas y tablas se convierten en una sola corriente de texto. Tu principal desafío es reconstruir inteligentemente las relaciones visuales a partir del texto desordenado. **NO asumas que una etiqueta y su valor están uno al lado del otro, a menos que una regla específica lo indique.**
+            1.  **Aviso sobre la Extracción de Texto de los Documentos de Soporte (¡Regla Fundamental!):** El texto que recibes de los PDF de soporte es una versión "aplanada". Las columnas y tablas se convierten en una sola corriente de texto. Tu principal desafío es reconstruir inteligentemente las relaciones visuales a partir del texto desordenado. **NO asumas que una etiqueta y su valor están uno al lado del otro, a menos que una regla específica lo indique.** Esto NO aplica al documento base: sus datos ya vienen estructurados arriba.
 
             2.  **Análisis de Costos (CIF y Facturas) - ¡MÁXIMA PRIORIDAD!**
                 Esta es tu tarea más crítica. Sigue estas sub-reglas para la comparación de costos:
-                **Sub-Regla A: Regla Mejorada de Extracción del Valor CIF por Subpartida**
-                - 🧠 **Objetivo:** Tu objetivo es extraer correctamente el valor CIF por cada subpartida arancelaria. Este valor aparece junto a 4 valores previos, en una secuencia específica. Usualmente en este orden: \`Valor FOB\`, \`Fletes\`, \`Seguros\`, \`Otros Gastos\`, \`Valor CIF\`.
-                - **Ejemplo de Patrón en Texto Plano:**
-                  \`\`\`
-                  Valor FOB Fletes Seguros Otros Gastos Valor CIF 87,763.5000 4,050.0000 300.0000 0.0000 92,113.5000
-                  \`\`\`
-                - ✅ **Instrucciones:**
-                  1. Por cada subpartida (identificada por una línea que contiene “Subpartida XXXXXXXX”), busca en las líneas siguientes un bloque que contenga exactamente las 5 etiquetas en orden: \`Valor FOB\`, \`Fletes\`, \`Seguros\`, \`Otros Gastos\`, \`Valor CIF\`.
-                  2. **Búsqueda Multi-Moneda:** Para una misma subpartida, puede existir más de un bloque de estos, a menudo uno para USD y otro para COP. DEBES buscar y extraer el valor CIF de **CADA** bloque que encuentres asociado a esa subpartida. Cada valor extraído debe ser una entrada separada en \`base_doc_cif_values\` con su respectiva moneda.
-                  3. Si encuentras inmediatamente después (o en la misma línea) una secuencia de 5 valores numéricos correlativos, asigna el **quinto** valor como el **Valor CIF**.
-                  4. **Regla de Flexibilidad CRÍTICA:** Siempre que encuentres la estructura completa en orden (5 etiquetas + 5 números), DEBES extraer el valor CIF, **incluso si hay espacios, saltos de línea o texto irrelevvente entre las etiquetas y los valores**. Tu tarea es reconstruir la relación posicional.
-                  5. **Regla de Validez del CIF - ¡MÁXIMA IMPORTANCIA!:**
-                     - **Obligatorio y No Cero:** Al menos un valor CIF válido (USD o COP) es **OBLIGATORIO** para cada subpartida y **NUNCA** puede ser cero. Si el quinto valor numérico que identificas como CIF es '0' o '0.0000', es un error de extracción. Debes descartar ese bloque y continuar buscando el correcto.
-                     - **Prohibido 'No encontrado' o 'N/A':** NO puedes reportar 'No encontrado' o 'N/A' para una subpartida completa. DEBES encontrar al menos un valor numérico válido y mayor que cero (ya sea USD o COP) para cada subpartida listada. La persistencia en la búsqueda es clave.
+                **Sub-Regla A: Valores CIF del Documento Base**
+                - Los valores CIF por subpartida y los grandes totales del documento base YA fueron calculados y te fueron entregados arriba en \`base_doc_cif_values\` y \`base_doc_totals\`. CÓPIALOS VERBATIM en los campos homónimos de tu respuesta. NO los recalcules ni busques "Valor FOB/Fletes/Seguros/Otros Gastos/Valor CIF" en ningún texto — esa reconstrucción ya no es necesaria.
 
                 **Sub-Regla B: Extracción de Totales de Facturas de Soporte - ¡MUY IMPORTANTE!**
                 - **Clasificación Previa de Soportes para Costos (Regla Crítica):** Antes de extraer cualquier valor, tu primer paso es clasificar cada documento de soporte. Para el análisis de costos, considera **ÚNICAMENTE** documentos que son claramente facturas, remesas o listas de empaque con valores (es decir, una lista de artículos con precios). **IGNORA** y excluye categóricamente cualquier valor monetario encontrado en documentos que no cumplen este criterio, como contratos, cartas o acuerdos. Tu lista en \`support_docs_invoice_values\` solo debe contener valores de los documentos que clasificaste como válidos para costos.
@@ -362,82 +582,49 @@ async function runVerification(): Promise<any> {
                 - El resultado debe ser una lista con un solo valor por factura por moneda. Por ejemplo, si hay 2 facturas en USD y 1 en COP, la lista tendrá 3 entradas.
 
                 **Sub-Regla C: Cálculo, Conversión y Comparación**
-                - Calcula los grandes totales para el documento base (sumando todos los CIF extraídos por moneda) y para los documentos de soporte (sumando todos los totales de factura por moneda).
-                - **Regla de Conversión OBLIGATORIA:** Si hay una "Tasa de Cambio" disponible, DEBES usarla para enriquecer AMBOS listados de totales (\`base_doc_totals\` y \`support_docs_totals\`). Para cada total en la lista, si existe la moneda opuesta (USD vs COP), calcula y añade su valor equivalente en los campos \`converted_total\` y \`converted_currency\`. Por ejemplo, si tienes un total base en USD, calcula su equivalente en COP y añádelo. Haz lo mismo para los totales de soporte.
-                - 'match' es \`true\` si los grandes totales coinciden (directamente o mediante conversión). Explica el resultado en \`reasoning\`.
+                - \`base_doc_totals\` ya viene calculado (cópialo verbatim). Calcula únicamente \`support_docs_totals\` sumando todos los totales de factura de soporte por moneda.
+                - **Regla de Conversión OBLIGATORIA:** Si hay una "Tasa de Cambio" disponible (\`tasa_cambio\`), DEBES usarla para enriquecer \`support_docs_totals\`. Para cada total en la lista, si existe la moneda opuesta (USD vs COP), calcula y añade su valor equivalente en los campos \`converted_total\` y \`converted_currency\`.
+                - 'match' es \`true\` si los grandes totales coinciden (directamente o mediante conversión) entre \`base_doc_totals\` y \`support_docs_totals\`. Explica el resultado en \`reasoning\`.
 
             3.  **Regla Crítica para 'Número de Factura Comercial' (¡MÁXIMA ATENCIÓN!):**
-                - **Objetivo:** Tu tarea es verificar que **TODAS** las facturas comerciales listadas en el documento base se encuentren en los documentos de soporte.
-                - **Extracción del Documento Base:**
-                    - Para el campo 'Número de Factura Comercial', busca texto que a menudo puede contener una lista de múltiples números de factura en una sola línea, como: 'Factura Comercial 5042823 - 5042822 - 5042821'.
-                    - DEBES reconocer esto como una lista y extraer cada número individualmente. Los separadores comunes son guiones ('-'), comas (',') y espacios.
-                    - En el campo 'base_value' de los resultados, reporta la cadena de texto original que encontraste (ej. "5042823, 5042822, 5042821").
+                - **Objetivo:** Tu tarea es verificar que la(s) factura(s) comercial(es) del documento base se encuentren en los documentos de soporte.
+                - **Base:** El valor base es \`codigo_factura\`, tal cual (puede venir con espacios o prefijos, ej. "REMSION SFI0739"). Repórtalo tal cual en \`base_value\`. Si no lo encuentras claramente en los documentos de soporte, revisa \`complementos_anexos\` (entradas con "FACTURA" en \`anexo\`) — allí puede haber una versión más limpia del mismo número (ej. "SFI0739"); si la encuentras y coincide con un documento de soporte, considera 'match: true' y explica en \`reasoning\` que se usó la referencia del complemento para desambiguar, sin sustituir el \`base_value\` reportado.
                 - **Análisis y Coincidencia en Documentos de Soporte:**
-                    - Busca cada uno de los números de factura extraídos del documento base dentro de TODOS los documentos de soporte.
-                    - En el campo 'support_value' de los resultados, reporta una lista separada por comas de las facturas que SÍ encontraste.
-                - **Regla de Coincidencia (match):**
-                    - **'match: true':** Solo si **TODOS y CADA UNO** de los números de factura del 'base_value' fueron encontrados en los documentos de soporte.
-                    - **'match: false':** Si falta **AL MENOS UNA** factura.
-                - **Regla de Razonamiento (reasoning):**
-                    - Si 'match: false', DEBES especificar en 'reasoning' exactamente cuáles facturas se encontraron y cuáles faltan.
-                    - **Ejemplo de Falla:**
-                        - 'field_name': "Número de Factura Comercial"
-                        - 'base_value': "5042823 - 5042822 - 5042821"
-                        - 'support_value': "5042823, 5042822"
-                        - 'match': false
-                        - 'reasoning': "Se encontraron las facturas 5042823 y 5042822, pero falta la factura 5042821."
+                    - Busca el número de factura del documento base (y sus variantes de \`complementos_anexos\` si aplica) dentro de TODOS los documentos de soporte.
+                    - En el campo 'support_value' de los resultados, reporta lo que SÍ encontraste.
+                - **Regla de Coincidencia (match):** 'match: true' solo si encontraste una coincidencia razonable (directa o vía complemento) en los documentos de soporte; 'match: false' si no la encontraste.
+                - **Regla de Razonamiento (reasoning):** Si 'match: false', DEBES especificar en 'reasoning' qué se buscó y por qué no se encontró.
                 - **Importante:** Esta regla anula la "Regla de Coincidencia General" y la "Regla de Extracción para Otros Campos" para el campo "Número de Factura Comercial".
-            
-            4.  **Regla de Diferenciación Geográfica y Límites (Origen, Compra, Destino, Procedencia) - ¡ALTA PRIORIDAD!**
-                Esta regla es CRÍTICA y ANULA otras reglas de extracción si se cumple.
-                - **Significado:** NO CONFUNDAS **Origen** (fabricación), **Compra** (transacción), **Procedencia** (despacho), **Destino** (entrega).
-                - **Extracción:** Prefiere bloques verticales o alineación visual. Si no, busca la etiqueta exacta.
-                - **Coincidencia:** SÓLO es \`match: true\` si el MISMO campo coincide (ej. Origen vs Origen). Si \`base.Destino\` coincide con \`support.Procedencia\`, es una DISCREPANCIIA (\`match: false\`) y DEBES explicarlo en \`reasoning\`.
-                - **Errores a Evitar:** NO uses el valor de "Procedencia" para "Origen" o viceversa.
-                - **Sub-Regla de Integridad Geográfica (¡MUY IMPORTANTE!):** Al extraer un valor para un campo geográfico, sé extremadamente cuidadoso para delimitarlo correctamente. Un valor geográfico **NUNCA** debe mezclar ciudades o países que no tienen una relación jerárquica directa (ej. una ciudad dentro de un país).
-                    - **Ejemplo de ERROR:** "BRASIL-RIO GRANDE, Miami, FL" es una extracción **INCORRECTA** porque mezcla una ubicación en Brasil con una en EE. UU.
-                    - **Instrucción:** Tu tarea es identificar el final lógico de una dirección o lugar. Una nueva etiqueta de campo (como 'Consignatario:', 'Puerto de descarga:'), una línea en blanco significativa, o un cambio abrupto de contexto (como el nombre de otra empresa) suelen marcar el final de una ubicación. Si extraes "BRASIL-RIO GRANDE", DEBES detenerte si el siguiente texto es "Miami". Trata "Miami" como parte de un campo diferente (quizás el Destino, o la dirección del consignatario). Extrae únicamente la información relevante para el campo que estás analizando.
+
+            4.  **Regla de Diferenciación Geográfica (Origen, Compra, Destino, Procedencia) - ¡ALTA PRIORIDAD!**
+                - **Significado:** NO CONFUNDAS **Origen** (fabricación), **Compra** (transacción), **Procedencia** (despacho), **Destino** (entrega). Los valores base (\`origen\`, \`compra\`, \`destino\`, \`procedencia\`) ya vienen correctamente identificados y delimitados — cópialos tal cual, no los reinterpretes.
+                - **Extracción en documentos de soporte:** Prefiere bloques verticales o alineación visual. Si no, busca la etiqueta exacta. Ten cuidado de no mezclar ciudades o países sin relación jerárquica directa al extraer del texto de soporte (ej. no combines "BRASIL-RIO GRANDE" con "Miami" si son campos distintos).
+                - **Coincidencia:** SÓLO es \`match: true\` si el MISMO campo coincide (ej. Origen vs Origen). Si \`base.Destino\` coincide con \`support.Procedencia\`, es una DISCREPANCIA (\`match: false\`) y DEBES explicarlo en \`reasoning\`.
 
             5.  **Análisis Detallado de Artículos (Coincidencia Flexible):**
-                Realiza una comparación granular para cada artículo.
+                Realiza una comparación granular para cada artículo de \`subpartidas[].articulos[]\` contra lo encontrado en los documentos de soporte.
                 - **Coincidencia de Nombres (name_comparison):** ¡REGLA CRÍTICA! Debes ser flexible. El \`match\` debe ser \`true\` si los nombres son **semánticamente equivalentes**, aunque no sean idénticos textualmente. Tolera errores de OCR, orden de palabras, abreviaturas o palabras descriptivas adicionales. Por ejemplo, "TORNILLO ACERO INOX 3/4" DEBE coincidir con "Tornillo de Acero Inoxidable 3/4 Pulg.". Solo marca \`match: false\` si estás seguro de que son productos diferentes.
-                - **Coincidencia de Cantidad (quantity_comparison):** El \`match\` es \`true\` si las cantidades son idénticas.
-                - **Coincidencia de Costos (cost_comparison):** ¡REGLA CRÍTICA! Tu tarea es realizar un análisis de costos DUAL para cada artículo, comparando tanto el **Costo Unitario** como el **Costo Total** de forma independiente.
-                    - **Regla de Moneda para Artículos (¡MUY IMPORTANTE!):** Asume que los valores totales y unitarios de los artículos están **SIEMPRE en dólares (USD)**, a menos que el documento indique explícitamente una moneda diferente junto al valor.
-                    - **Extracción DUAL Obligatoria:** Para cada artículo, DEBES intentar extraer dos conjuntos de valores:
-                        1.  **Costo Unitario:** Busca valores etiquetados explícitamente como "Precio Unitario", "Valor Unitario", "Unit Price", etc. Rellena el objeto \`unit_cost\` con esta información.
-                        2.  **Costo Total:** Busca valores etiquetados como "Valor Total", "Subtotal", "Total Item", "Amount", etc. Rellena el objeto \`total_cost\` con esta información.
-                    - **Manejo de Valores Faltantes:** Si no puedes encontrar un tipo de costo (por ejemplo, el costo total no está disponible para un artículo), DEBES reportar sus valores como "No encontrado" dentro de su objeto respectivo (\`unit_cost\` o \`total_cost\`). NO omitas el objeto.
+                - **Coincidencia de Cantidad (quantity_comparison):** Compara \`cantidad\` (base) contra la cantidad extraída del soporte. El \`match\` es \`true\` si las cantidades son idénticas.
+                - **Coincidencia de Costos (cost_comparison):** ¡REGLA CRÍTICA! Tu tarea es realizar un análisis de costos DUAL para cada artículo, comparando tanto el **Costo Unitario** (base: \`precio_unitario_usd\`, en USD) como el **Costo Total** (base: \`cantidad × precio_unitario_usd\`) de forma independiente contra lo extraído del soporte.
+                    - **Regla de Moneda para Artículos (¡MUY IMPORTANTE!):** Los valores base de artículos están en USD (\`precio_unitario_usd\`). Asume que los valores del soporte están en USD también, a menos que el documento indique explícitamente una moneda diferente.
+                    - **Manejo de Valores Faltantes:** Si no encuentras un tipo de costo en el soporte, reporta sus valores como "No encontrado" dentro de su objeto respectivo (\`unit_cost\` o \`total_cost\`). NO omitas el objeto.
                     - **Coincidencia Individual:** El campo \`match\` dentro de \`unit_cost\` y \`total_cost\` se determina de forma independiente. Es \`true\` si los valores son idénticos, la diferencia porcentual es del 5% o menos, o si ambos son 'No encontrado'.
                     - **Coincidencia General (\`overall_match\`):** Es \`true\` solo si \`unit_cost.match\` y \`total_cost.match\` son ambos \`true\`. Si solo un tipo de costo está disponible, su coincidencia determina este valor.
-                    - **Conversión de Moneda Obligatoria:** Si los costos están en monedas diferentes (ej. USD vs COP) y se ha extraído una "Tasa de Cambio", DEBES usarla para convertir uno de los valores a la moneda del otro ANTES de comparar. La coincidencia se determina sobre los valores ya convertidos a una moneda común.
-                ${conversionData && conversionData.length > 0 ? `
-                **Lógica Adicional OBLIGATORIA para Conversión de Unidades:**
-                Se ha proporcionado el siguiente archivo Excel con datos para conversión de unidades. Esta lógica es ADICIONAL al análisis de artículos y NO LO REEMPLAZA.
-                Para cada artículo en 'articles_comparison', DEBES añadir el campo 'unit_conversion_analysis' SI Y SOLO SI las unidades de cantidad (ej: 'cajas', 'kg') extraídas de los documentos NO coinciden.
+                    - **Conversión de Moneda Obligatoria:** Si los costos del soporte están en una moneda diferente a USD y hay una \`tasa_cambio\` disponible, DEBES usarla para convertir antes de comparar.
+                **Lógica OBLIGATORIA para Conversión de Unidades:**
+                Cada artículo base en \`subpartidas[].articulos[]\` ya trae su propio \`factor_conversion_nmconversion\` (equivalente al NMCONVERSION del sistema de origen). Para cada artículo en 'articles_comparison', DEBES añadir el campo 'unit_conversion_analysis' SI Y SOLO SI la unidad de cantidad (\`unidad_medida\`) del artículo base NO coincide con la unidad extraída del documento de soporte.
+                a.  Para cada artículo, extrae cantidad numérica y unidad para 'base_quantity'/'base_unit' (del JSON base) y 'support_quantity'/'support_unit' (del documento de soporte). Popula 'units_match' (booleano).
+                b.  **Si 'units_match' es \`false\`:** Usa el \`factor_conversion_nmconversion\` de ese artículo como factor. Calcula: \`cantidad_convertida = support_quantity * factor_conversion_nmconversion\`. Popula 'conversion_applied: true', 'conversion_factor_used', y 'converted_support_quantity'. Compara 'cantidad_convertida' con 'base_quantity' (tolerancia del 5%) para determinar 'final_validation_status' ('✅ Coincide' o '❌ Cantidad incorrecta').
+                c.  **Si 'units_match' es \`true\`:** OMITE el campo 'unit_conversion_analysis' por completo para ese artículo.
+                d.  **Regla de Actualización de Coincidencia de Cantidad (¡MUY IMPORTANTE!):** Si el resultado en 'final_validation_status' es '✅ Coincide', DEBES establecer 'quantity_comparison.match' en \`true\` para ese artículo, y añadir un 'reasoning' a 'quantity_comparison' explicando que la coincidencia se logró después de la conversión de unidades.
 
-                a.  **Datos de Conversión (desde archivo Excel):**
-                    \`\`\`json
-                    ${JSON.stringify(conversionData.slice(0, 50))} 
-                    \`\`\`
-                b.  **Instrucciones para 'unit_conversion_analysis':**
-                    -   Para cada artículo, extrae cantidad numérica y unidad para 'base_quantity'/'base_unit' y 'support_quantity'/'support_unit'.
-                    -   Popula 'units_match' (booleano).
-                    -   **Si 'units_match' es \`false\`:**
-                        -   Busca el artículo en los datos de conversión de arriba (por 'CODITEM' o nombre).
-                        -   **Si lo encuentras:** Usa el valor 'NMCONVERSION' como factor. Calcula: \`cantidad_convertida = support_quantity * NMCONVERSION\`. Popula 'conversion_applied: true', 'conversion_factor_used', y 'converted_support_quantity'. Compara 'cantidad_convertida' con 'base_quantity' (tolerancia del 5%) para determinar 'final_validation_status' ('✅ Coincide' o '❌ Cantidad incorrecta').
-                        -   **Si NO lo encuentras:** Popula 'conversion_applied: false' y 'final_validation_status' DEBE SER '⚠️ Falta conversión'.
-                    -   **Si 'units_match' es \`true\`:** OMITE el campo 'unit_conversion_analysis' por completo para ese artículo.
-                c.  **Regla de Actualización de Coincidencia de Cantidad (¡MUY IMPORTANTE!):**
-                    -   Si realizas un análisis de conversión y el resultado en 'final_validation_status' es '✅ Coincide', DEBES establecer 'quantity_comparison.match' en \`true\` para ese artículo. Adicionalmente, DEBES añadir un 'reasoning' a 'quantity_comparison' explicando que la coincidencia se logró después de la conversión de unidades.` : ''}
-            
             6.  **Regla Obligatoria para 'Tipo de Transporte' (¡IMPORTANTE!):**
-                - **Extracción:** Utiliza la Regla 4 para extraer el tipo de transporte.
-                - **Inferencia:** Si el tipo no está explícitamente indicado, DEBES inferirlo a partir de pistas en el texto, como "B/L" (Bill of Lading) para "Marítimo", "AWB" (Air Waybill) para "Aéreo", o términos como "camión" o "carreguera" para "Terrestre".
-                - **Razonamiento OBLIGATORIO:** Para el campo 'Tipo de Transporte', el campo 'reasoning' es **OBLIGATORIO**. DEBES explicar siempre CÓMO determinaste el tipo de transporte.
+                - **Base:** Usa \`tipo_transporte\` tal cual.
+                - **Extracción en soporte:** Si no está explícitamente indicado en el documento de soporte, DEBES inferirlo a partir de pistas en el texto, como "B/L" (Bill of Lading) para "Marítimo", "AWB" (Air Waybill) para "Aéreo", o términos como "camión" o "carretera" para "Terrestre".
+                - **Razonamiento OBLIGATORIO:** Para el campo 'Tipo de Transporte', el campo 'reasoning' es **OBLIGATORIO**. DEBES explicar siempre CÓMO determinaste el valor de soporte.
 
             7.  **Regla de Extracción para Otros Campos:**
-                Para campos no cubiertos por reglas de alta prioridad, usa el método de "emparejamiento por orden": identifica bloques de etiquetas y valores, y emparéjalos secuencialmente.
+                Para campos no cubiertos por reglas de alta prioridad, usa el método de "emparejamiento por orden" SOLO sobre el texto de los documentos de soporte: identifica bloques de etiquetas y valores, y emparéjalos secuencialmente.
 
             8.  **Regla de Coincidencia General:**
                 - **Coincidencia Verdadera ('match: true'):** Los valores son idénticos/equivalentes, o ambos son 'No encontrado'.
@@ -445,14 +632,14 @@ async function runVerification(): Promise<any> {
                 - **Excepción:** No aplica a campos con reglas de coincidencia personalizadas (como Factura Comercial) o al Documento de Transporte si la regla de 'Origen Nacional' se activa.
 
             9.  **Regla de Negocio Obligatoria - Origen Nacional (Colombia):**
-                - **SI** el 'Origen' es 'COLOMBIA' o una ubicación dentro de Colombia, el campo 'Número de Documento de Transporte' DEBE tener 'match: true' y el 'reasoning' debe ser "No obligatorio para origen nacional (Colombia)", ignorando cualquier valor extraído.
-                - **DE LO CONTRARIO (si el origen NO es Colombia):** Esta regla especial NO aplica. DEBES buscar y comparar el 'Número de Documento de Transporte' como harías con cualquier otro campo, siguiendo las reglas generales (Reglas 7 y 8). No asumas que no es obligatorio.
+                - **SI** el 'Origen' base es 'COLOMBIA' o una ubicación dentro de Colombia, el campo 'Número de Documento de Transporte' DEBE tener 'match: true' y el 'reasoning' debe ser "No obligatorio para origen nacional (Colombia)", ignorando cualquier valor extraído del soporte.
+                - **DE LO CONTRARIO (si el origen NO es Colombia):** Esta regla especial NO aplica. DEBES buscar y comparar el 'Número de Documento de Transporte' (\`documento_transporte\`) como harías con cualquier otro campo, siguiendo las reglas generales (Reglas 7 y 8).
 
             10. **Regla Geográfica - Coincidencia Jerárquica:**
                 Considera 'match: true' si un valor es una ciudad y el otro es el país que la contiene (ej. 'Origen: COLOMBIA' y 'Origen: Cartagena'). Cuando apliques esta regla, DEBES justificarlo en 'reasoning'.
 
-            11. **Extracción de Tasa de Cambio (Solo Documento Base):**
-                Busca la etiqueta "Tasa Cambio" y extrae el número que le sigue. Rellena un item en 'comparison_results'. 'support_value' debe ser "No encontrado" y 'match' debe ser 'true'.
+            11. **Tasa de Cambio (Solo Documento Base):**
+                Usa \`tasa_cambio\` tal cual. Rellena un item en 'comparison_results' con ese \`base_value\`. 'support_value' debe ser "No encontrado" y 'match' debe ser 'true'.
 
             12. **Resumen y Resultado Final:**
                 Proporciona un resumen general y determina el 'overall_match'.
@@ -460,17 +647,12 @@ async function runVerification(): Promise<any> {
             **Formato de Respuesta:**
             Proporciona tu análisis completo en el formato JSON especificado.
 
-            **Contenido del Documento Base (${baseFileName}):**
-            ---
-            ${baseDocText}
-            ---
-
             **Contenido de los Documentos de Soporte (agregados):**
             ---
             ${supportDocText}
             ---
         `;
-        
+
         console.log("Estimando tokens de entrada...");
         try {
             const { totalTokens } = await ai.models.countTokens({
@@ -572,7 +754,7 @@ function updateUIState(state: 'initial' | 'loading' | 'success' | 'error', messa
                 <div class="initial-state">
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="feather feather-file-text"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
                     <h2>Listo para el Análisis</h2>
-                    <p>Seleccione una carpeta para comenzar.</p>
+                    <p>Cargue el FMM (JSON) y la carpeta de documentos de soporte para comenzar.</p>
                 </div>`;
             break;
     }
@@ -670,130 +852,8 @@ function collectDiscrepancies(result: any): any[] {
     return discrepancies;
 }
 
-function extractMostRecentDate(text: string): Date | null {
-    // Regex for YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY (with flexible separators)
-    const dateRegex = /(\d{4})[-/](\d{1,2})[-/](\d{1,2})|(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})/g;
-    let match;
-    const dates: Date[] = [];
-    const currentYear = new Date().getFullYear();
 
-    while ((match = dateRegex.exec(text)) !== null) {
-        try {
-            let year, month, day;
-            if (match[1]) { // Format YYYY-MM-DD
-                year = parseInt(match[1], 10);
-                month = parseInt(match[2], 10) - 1;
-                day = parseInt(match[3], 10);
-            } else { // Format DD-MM-YYYY or DD-MM-YY
-                year = parseInt(match[6], 10);
-                month = parseInt(match[5], 10) - 1;
-                day = parseInt(match[4], 10);
-                if (year < 100) {
-                     // Handle 2-digit years. E.g., if current year is 2024, '99' becomes 1999, '23' becomes 2023.
-                    year += (year > (currentYear % 100)) ? 1900 : 2000;
-                }
-            }
-
-            // Basic validation: ensure date is plausible
-            if (year > 1900 && year <= currentYear + 1 && month >= 0 && month < 12 && day > 0 && day <= 31) {
-                const d = new Date(year, month, day);
-                // Final check to ensure Date object wasn't rolled over (e.g., Feb 30 -> Mar 1)
-                if (d.getFullYear() === year && d.getMonth() === month && d.getDate() === day) {
-                    dates.push(d);
-                }
-            }
-        } catch (e) {
-            console.warn("Could not parse date from match:", match);
-        }
-    }
-
-    if (dates.length === 0) return null;
-
-    // Return the most recent date from all found dates
-    return new Date(Math.max(...dates.map(d => d.getTime())));
-}
-
-async function classifyFiles(allFiles: File[]): Promise<{
-    success: boolean;
-    baseDocument: File | null;
-    supportDocuments: File[];
-    baseDocumentDate: Date | null;
-}> {
-    baseDocument = null;
-    supportDocuments = [];
-    
-    // Phase 1: Check filenames
-    let candidates = allFiles.filter(f => {
-        const name = f.name.toLowerCase();
-        return name.startsWith('fmm') || name.includes('formulario');
-    });
-
-    // Phase 2: If no candidates by name, check content
-    if (candidates.length === 0) {
-        const contentChecks = await Promise.all(allFiles.map(async (file) => {
-            const text = await extractTextFromPdf(file, true);
-            return text.toUpperCase().includes('FORMULARIO DE MOVIMIENTO DE MERCANCIAS') ? file : null;
-        }));
-        candidates = contentChecks.filter((f): f is File => f !== null);
-    }
-
-    // Phase 3: Tie-breaking and Final Selection
-    let finalCandidate: File | null = null;
-    let finalDate: Date | null = null;
-
-    if (candidates.length > 1) {
-        updateUIState('loading', `Múltiples FMM encontrados. Seleccionando el más reciente...`);
-        
-        const candidatesWithDates = await Promise.all(candidates.map(async file => {
-            const text = await extractTextFromPdf(file, true);
-            const date = extractMostRecentDate(text);
-            return { file, date };
-        }));
-
-        const datedCandidates = candidatesWithDates.filter(c => c.date !== null);
-
-        if (datedCandidates.length > 0) {
-            // Find the most recent date
-            const maxTimestamp = Math.max(...datedCandidates.map(c => c.date!.getTime()));
-            
-            // Get all candidates that share this most recent date
-            let bestCandidates = datedCandidates.filter(c => c.date!.getTime() === maxTimestamp).map(c => c.file);
-            
-            // If there's still a tie, sort by name alphabetically and pick the last one
-            if (bestCandidates.length > 1) {
-                console.warn(`Empate de fechas (${new Date(maxTimestamp).toLocaleDateString()}). Resolviendo por nombre de archivo.`);
-                bestCandidates.sort((a, b) => a.name.localeCompare(b.name));
-            }
-            finalCandidate = bestCandidates[bestCandidates.length - 1];
-            finalDate = new Date(maxTimestamp);
-
-        } else {
-            // If no candidates had a parsable date, sort all original candidates by name
-            console.warn(`No se encontraron fechas válidas en los FMM. Resolviendo por nombre de archivo.`);
-            candidates.sort((a, b) => a.name.localeCompare(b.name));
-            finalCandidate = candidates[candidates.length - 1];
-            // finalDate remains null
-        }
-        
-    } else if (candidates.length === 1) {
-        finalCandidate = candidates[0];
-        const text = await extractTextFromPdf(finalCandidate, true);
-        finalDate = extractMostRecentDate(text);
-    }
-    
-    // Phase 4: Finalize classification
-    if (finalCandidate) {
-        baseDocument = finalCandidate;
-        supportDocuments = allFiles.filter(f => f.name !== baseDocument!.name);
-        console.log(`Documento base seleccionado: ${baseDocument.name} (Fecha: ${finalDate?.toLocaleDateString() || 'No encontrada'})`);
-        return { success: true, baseDocument, supportDocuments, baseDocumentDate: finalDate };
-    } else {
-        return { success: false, baseDocument: null, supportDocuments: [], baseDocumentDate: null };
-    }
-}
-
-
-async function downloadFullReportAsPDF(analysisResult: any, baseDoc: File, supportDocs: File[], baseDocDate: Date | null) {
+async function downloadFullReportAsPDF(analysisResult: any, baseDoc: File, supportDocs: File[]) {
     if (!analysisResult) {
         throw new Error("No hay resultados para generar el reporte.");
     }
@@ -977,20 +1037,6 @@ async function downloadFullReportAsPDF(analysisResult: any, baseDoc: File, suppo
     });
     y = (doc as any).lastAutoTable.finalY + 5;
 
-    if (conversionFile) {
-        checkPageBreak(20);
-        autoTable(doc, {
-            startY: y,
-            head: [['Archivo de Conversión Utilizado']],
-            body: [[conversionFile.name]],
-            theme: 'striped',
-            headStyles: { fillColor: COLOR.WARNING, textColor: COLOR.WHITE },
-            styles: { fontSize: FONT_BODY },
-            margin: { left: MARGIN, right: MARGIN }
-        });
-        y = (doc as any).lastAutoTable.finalY + 5;
-    }
-    
     const exchangeRateField = analysisResult.comparison_results.find((item: any) => item.field_name.toLowerCase().includes('tasa de cambio'));
     if (fmmNumber !== 'N/A' || exchangeRateField) {
         addSectionHeader('Datos Clave Extraídos');
@@ -1331,11 +1377,6 @@ async function downloadFullReportAsPDF(analysisResult: any, baseDoc: File, suppo
         const notesBody = [
             ['Validación de Costos', 'La validación se realizó únicamente con documentos de soporte identificados como facturas, remesas o listas de empaque con valores.'],
         ];
-        if (baseDocDate) {
-            notesBody.push(['Selección Documento Base', `Se seleccionó '${baseDoc.name}' por tener la fecha más reciente encontrada: ${baseDocDate.toLocaleDateString('es-CO')}.`]);
-        } else {
-            notesBody.push(['Selección Documento Base', `Se seleccionó '${baseDoc.name}' según las reglas de clasificación (nombre, contenido o desempate alfabético).`]);
-        }
 
         autoTable(doc, {
             startY: y,
@@ -1409,67 +1450,51 @@ async function downloadFullReportAsPDF(analysisResult: any, baseDoc: File, suppo
 
 
 function resetApp() {
+    fmmJsonInput.value = '';
+    fmmSelectionPrompt.textContent = 'Haga clic para seleccionar el archivo del FMM';
+    fmmSelectionPrompt.classList.remove('file-selected');
+
     folderInput.value = '';
     folderSelectionPrompt.textContent = 'Haga clic para seleccionar una carpeta';
-    updateUIState('initial');
-    
-    conversionData = null;
-    baseDocument = null;
-    supportDocuments = [];
-    conversionFile = null;
+    folderSelectionPrompt.classList.remove('file-selected');
 
+    updateUIState('initial');
+
+    baseDocumentJson = null;
+    baseDocumentFile = null;
+    supportDocuments = [];
+    selectedFmmFile = null;
+    selectedSupportFiles = [];
+
+    fmmJsonInput.disabled = false;
     folderInput.disabled = false;
     clearButton.disabled = false;
 }
 
-// Event Listeners
-folderInput.addEventListener('change', async () => {
-    if (!folderInput.files || folderInput.files.length === 0) {
-        updateUIState('error', 'No se detectaron archivos en la carpeta seleccionada. Asegúrese de seleccionar una carpeta con documentos y que el navegador tenga permisos para acceder a ella.');
-        return;
-    }
-    
+async function maybeStartAnalysis() {
+    if (!selectedFmmFile || selectedSupportFiles.length === 0) return;
+
+    fmmJsonInput.disabled = true;
     folderInput.disabled = true;
     clearButton.disabled = true;
 
     try {
-        const files: File[] = Array.from(folderInput.files);
+        updateUIState('loading', 'Leyendo el FMM (JSON)...');
+        baseDocumentJson = await parseFmmJsonFile(selectedFmmFile);
+        baseDocumentFile = selectedFmmFile;
 
-        // Auto-detect and parse Excel file for unit conversions
-        const excelFile = files.find(f => f.name.toLowerCase().endsWith('.xlsx') || f.name.toLowerCase().endsWith('.xls'));
-        if (excelFile) {
-            console.log(`Archivo Excel de conversión detectado: ${excelFile.name}`);
-            updateUIState('loading', `Procesando archivo de conversión: ${excelFile.name}...`);
-            await parseExcelFile(excelFile);
-        } else {
-            console.log("No se encontró archivo Excel de conversión en la carpeta.");
-            conversionData = null;
-            conversionFile = null;
-        }
-
-        updateUIState('loading', 'Clasificando archivos PDF...');
-        const pdfFiles = files.filter(file => file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'));
+        const pdfFiles = selectedSupportFiles.filter(file =>
+            file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'));
 
         if (pdfFiles.length === 0) {
-            throw new Error('No se encontraron archivos PDF en la carpeta seleccionada.');
+            throw new Error('No se encontraron archivos PDF en la carpeta de documentos de soporte.');
         }
-
-        const classificationResult = await classifyFiles(pdfFiles);
-        
-        if (!classificationResult.success || !classificationResult.baseDocument) {
-             throw new Error('No se pudo identificar un documento base (Formulario de Movimiento de Mercancías).');
-        }
-
-        baseDocument = classificationResult.baseDocument;
-        supportDocuments = classificationResult.supportDocuments;
-        const baseDocumentDate = classificationResult.baseDocumentDate;
-
-        folderSelectionPrompt.textContent = `${baseDocument!.name} y ${supportDocuments.length} más`;
+        supportDocuments = pdfFiles;
 
         const result = await runVerification();
-        
+
         updateUIState('loading', 'Generando reporte PDF...');
-        await downloadFullReportAsPDF(result, baseDocument!, supportDocuments, baseDocumentDate);
+        await downloadFullReportAsPDF(result, baseDocumentFile, supportDocuments);
 
         updateUIState('success', 'El análisis ha finalizado. El reporte PDF ha sido descargado.');
 
@@ -1478,9 +1503,29 @@ folderInput.addEventListener('change', async () => {
         const errorMessage = error instanceof Error ? error.message : "Ocurrió un error inesperado durante el análisis.";
         updateUIState('error', errorMessage);
     } finally {
+        fmmJsonInput.disabled = false;
         folderInput.disabled = false;
         clearButton.disabled = false;
     }
+}
+
+// Event Listeners
+fmmJsonInput.addEventListener('change', () => {
+    selectedFmmFile = fmmJsonInput.files?.[0] ?? null;
+    fmmSelectionPrompt.textContent = selectedFmmFile ? selectedFmmFile.name : 'Haga clic para seleccionar el archivo del FMM';
+    fmmSelectionPrompt.classList.toggle('file-selected', !!selectedFmmFile);
+    void maybeStartAnalysis();
+});
+
+folderInput.addEventListener('change', () => {
+    if (!folderInput.files || folderInput.files.length === 0) {
+        updateUIState('error', 'No se detectaron archivos en la carpeta seleccionada. Asegúrese de seleccionar una carpeta con documentos y que el navegador tenga permisos para acceder a ella.');
+        return;
+    }
+    selectedSupportFiles = Array.from(folderInput.files);
+    folderSelectionPrompt.textContent = `${selectedSupportFiles.length} archivo(s) seleccionados`;
+    folderSelectionPrompt.classList.add('file-selected');
+    void maybeStartAnalysis();
 });
 
 clearButton.addEventListener('click', resetApp);
