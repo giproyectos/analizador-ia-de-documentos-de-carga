@@ -13,8 +13,14 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = `https://esm.sh/pdfjs-dist@4.4.168/buil
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
+// Web service del FMM (ver Boris Beltrán, reunión 2026-09-01): se busca el FMM
+// por número de formulario en vez de cargar el JSON manualmente.
+const FMM_API_URL = process.env.FMM_API_URL || 'http://www.siza.com.co/spdcitas-1.0/api/formulario';
+const FMM_API_TOKEN = process.env.FMM_API_TOKEN;
+
 // DOM Elements
-const fmmJsonInput = document.getElementById('fmm-json-input') as HTMLInputElement;
+const fmmNumberInput = document.getElementById('fmm-number-input') as HTMLInputElement;
+const fmmSearchButton = document.getElementById('fmm-search-button') as HTMLButtonElement;
 const fmmSelectionPrompt = document.getElementById('fmm-selection-prompt') as HTMLSpanElement;
 const folderInput = document.getElementById('folder-input') as HTMLInputElement;
 const folderSelectionPrompt = document.getElementById('folder-selection-prompt') as HTMLSpanElement;
@@ -81,7 +87,6 @@ let baseDocumentJson: FmmDocument | null = null;
 let baseDocumentFile: File | null = null;
 let supportDocuments: File[] = [];
 
-let selectedFmmFile: File | null = null;
 let selectedSupportFiles: File[] = [];
 
 
@@ -462,29 +467,51 @@ function buildBaseDocPromptData(fmm: FmmDocument): BaseDocPromptData {
     };
 }
 
-async function parseFmmJsonFile(file: File): Promise<FmmDocument> {
-    let raw: string;
-    try {
-        raw = await file.text();
-    } catch {
-        throw new Error(`No se pudo leer el archivo '${file.name}'.`);
-    }
-    let data: any;
-    try {
-        data = JSON.parse(raw);
-    } catch {
-        throw new Error(`El archivo '${file.name}' no contiene un JSON válido.`);
-    }
+function validateFmmDocument(data: any, sourceLabel: string): FmmDocument {
     if (!data || typeof data !== 'object') {
-        throw new Error(`El archivo '${file.name}' no tiene la estructura esperada de un FMM.`);
+        throw new Error(`La respuesta de '${sourceLabel}' no tiene la estructura esperada de un FMM.`);
     }
     if (!Array.isArray(data.tran_subpartidas) || data.tran_subpartidas.length === 0) {
-        throw new Error(`El archivo '${file.name}' no contiene subpartidas ('tran_subpartidas'). Verifique que sea el JSON correcto del FMM.`);
+        throw new Error(`La respuesta de '${sourceLabel}' no contiene subpartidas ('tran_subpartidas'). Verifique el número de formulario.`);
     }
     if (data.nro_form === undefined || data.nro_form === null) {
-        throw new Error(`El archivo '${file.name}' no contiene un número de formulario ('nro_form').`);
+        throw new Error(`La respuesta de '${sourceLabel}' no contiene un número de formulario ('nro_form').`);
     }
     return data as FmmDocument;
+}
+
+async function fetchFmmByNumber(formNumber: string): Promise<FmmDocument> {
+    if (!FMM_API_TOKEN) {
+        throw new Error('Falta configurar FMM_API_TOKEN. Defínalo en .env.local antes de compilar.');
+    }
+
+    const url = `${FMM_API_URL}?nmform_zf=${encodeURIComponent(formNumber)}`;
+    let response: Response;
+    try {
+        response = await fetch(url, {
+            method: 'GET',
+            headers: { 'Token': FMM_API_TOKEN },
+        });
+    } catch (error) {
+        console.error('Error de red al consultar el FMM:', error);
+        throw new Error('No se pudo conectar con el servicio de búsqueda de FMM. Verifique su conexión e inténtelo de nuevo.');
+    }
+
+    if (response.status === 404) {
+        throw new Error(`No se encontró ningún FMM con el número de formulario '${formNumber}'.`);
+    }
+    if (!response.ok) {
+        throw new Error(`El servicio de búsqueda de FMM respondió con un error (HTTP ${response.status}).`);
+    }
+
+    let data: any;
+    try {
+        data = await response.json();
+    } catch {
+        throw new Error('La respuesta del servicio de búsqueda de FMM no es un JSON válido.');
+    }
+
+    return validateFmmDocument(data, `formulario ${formNumber}`);
 }
 
 async function runVerification(): Promise<any> {
@@ -1449,9 +1476,14 @@ async function downloadFullReportAsPDF(analysisResult: any, baseDoc: File, suppo
 }
 
 
+function setFmmControlsDisabled(disabled: boolean) {
+    fmmNumberInput.disabled = disabled;
+    fmmSearchButton.disabled = disabled;
+}
+
 function resetApp() {
-    fmmJsonInput.value = '';
-    fmmSelectionPrompt.textContent = 'Haga clic para seleccionar el archivo del FMM';
+    fmmNumberInput.value = '';
+    fmmSelectionPrompt.textContent = 'Escriba el número de formulario y presione Buscar';
     fmmSelectionPrompt.classList.remove('file-selected');
 
     folderInput.value = '';
@@ -1463,26 +1495,57 @@ function resetApp() {
     baseDocumentJson = null;
     baseDocumentFile = null;
     supportDocuments = [];
-    selectedFmmFile = null;
     selectedSupportFiles = [];
 
-    fmmJsonInput.disabled = false;
+    setFmmControlsDisabled(false);
     folderInput.disabled = false;
     clearButton.disabled = false;
 }
 
-async function maybeStartAnalysis() {
-    if (!selectedFmmFile || selectedSupportFiles.length === 0) return;
+async function searchFmm() {
+    const formNumber = fmmNumberInput.value.trim();
+    if (!formNumber) {
+        updateUIState('error', 'Ingrese un número de formulario antes de buscar.');
+        return;
+    }
 
-    fmmJsonInput.disabled = true;
+    setFmmControlsDisabled(true);
+    clearButton.disabled = true;
+    updateUIState('loading', `Buscando el formulario ${formNumber}...`);
+
+    try {
+        baseDocumentJson = await fetchFmmByNumber(formNumber);
+        baseDocumentFile = new File(
+            [JSON.stringify(baseDocumentJson)],
+            `FMM-${formNumber}.json`,
+            { type: 'application/json' }
+        );
+
+        fmmSelectionPrompt.textContent = `Formulario ${formNumber} encontrado.`;
+        fmmSelectionPrompt.classList.add('file-selected');
+        updateUIState('initial');
+
+        await maybeStartAnalysis();
+    } catch (error) {
+        console.error('Error al buscar el FMM:', error);
+        baseDocumentJson = null;
+        baseDocumentFile = null;
+        const errorMessage = error instanceof Error ? error.message : 'Ocurrió un error inesperado al buscar el formulario.';
+        updateUIState('error', errorMessage);
+    } finally {
+        setFmmControlsDisabled(false);
+        clearButton.disabled = false;
+    }
+}
+
+async function maybeStartAnalysis() {
+    if (!baseDocumentJson || !baseDocumentFile || selectedSupportFiles.length === 0) return;
+
+    setFmmControlsDisabled(true);
     folderInput.disabled = true;
     clearButton.disabled = true;
 
     try {
-        updateUIState('loading', 'Leyendo el FMM (JSON)...');
-        baseDocumentJson = await parseFmmJsonFile(selectedFmmFile);
-        baseDocumentFile = selectedFmmFile;
-
         const pdfFiles = selectedSupportFiles.filter(file =>
             file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'));
 
@@ -1503,18 +1566,22 @@ async function maybeStartAnalysis() {
         const errorMessage = error instanceof Error ? error.message : "Ocurrió un error inesperado durante el análisis.";
         updateUIState('error', errorMessage);
     } finally {
-        fmmJsonInput.disabled = false;
+        setFmmControlsDisabled(false);
         folderInput.disabled = false;
         clearButton.disabled = false;
     }
 }
 
 // Event Listeners
-fmmJsonInput.addEventListener('change', () => {
-    selectedFmmFile = fmmJsonInput.files?.[0] ?? null;
-    fmmSelectionPrompt.textContent = selectedFmmFile ? selectedFmmFile.name : 'Haga clic para seleccionar el archivo del FMM';
-    fmmSelectionPrompt.classList.toggle('file-selected', !!selectedFmmFile);
-    void maybeStartAnalysis();
+fmmSearchButton.addEventListener('click', () => {
+    void searchFmm();
+});
+
+fmmNumberInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        void searchFmm();
+    }
 });
 
 folderInput.addEventListener('change', () => {

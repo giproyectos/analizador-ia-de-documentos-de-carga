@@ -12,7 +12,9 @@ export default defineConfig(({ mode }) => {
       plugins: [],
       define: {
         'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)
+        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+        'process.env.FMM_API_URL': JSON.stringify(env.FMM_API_URL),
+        'process.env.FMM_API_TOKEN': JSON.stringify(env.FMM_API_TOKEN)
       },
       resolve: {
         alias: {
