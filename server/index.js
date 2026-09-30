@@ -25,6 +25,22 @@ const distDir = path.join(__dirname, '..', 'dist');
 
 const app = express();
 
+// Peticiones con URLs mal formadas (ej. "/%c0", tipico de escaneos
+// automaticos) hacen que decodeURIComponent lance una excepcion dentro del
+// enrutador interno de Express, fuera de cualquier middleware de manejo de
+// errores, y eso tumba todo el proceso (ocurrio en produccion el
+// 2026-09-08, dejando la app caida hasta que alguien reinicio el servicio
+// manualmente). Se valida la URL antes de que Express intente enrutarla.
+app.use((req, res, next) => {
+    try {
+        decodeURIComponent(req.path);
+    } catch {
+        res.status(400).send('Bad Request');
+        return;
+    }
+    next();
+});
+
 app.get('/api/fmm', async (req, res) => {
     if (!FMM_API_TOKEN) {
         console.error('Falta configurar FMM_API_TOKEN en el entorno del servidor.');
